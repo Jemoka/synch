@@ -8,13 +8,22 @@ use std::fmt::Debug;
 
 type PhantomUnsend = PhantomData<std::sync::MutexGuard<'static, ()>>;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct SyncedList<T: Clone> {
     list: List<T, usize>,
     actor: usize,
     #[serde(skip)] 
     tape: Vec<Op<T, usize>>,
     
+}
+
+impl<'a, T: Clone + Debug> Debug for SyncedList<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncedList")
+            .field("list", &self.list.read::<Vec<_>>())
+            .field("actor", &self.actor)
+            .finish()
+    }
 }
 
 pub struct SyncedListGuard<'a, T: Clone> {
