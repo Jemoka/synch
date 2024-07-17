@@ -15,11 +15,18 @@ async fn main() -> Result<()> {
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
     // create connection helper 
-    let mut cnx = Connection::new(peer_connection.clone());
+    let mut cnx = Connection::new(peer_connection.clone(), None);
     let offer = cnx.offer().await?;
 
     println!("offer = {}", &offer);
-    cnx.answer(&offer).await?;
+
+    cnx.channel("test").await?;
+
+    let _ = tokio::signal::ctrl_c().await;
+
+    cnx.close().await?;
+
+    // cnx.answer(&offer).await?;
 
     // // read in a response
     // let mut response = String::new();
