@@ -108,7 +108,7 @@ impl Connection {
                         capacity:usize) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
     {
         println!("New Data Channel: {}", d.label());
-        let channel = Arc::new(d);
+        let channel = d.clone();
 
         Box::pin(async move {
             // create a new channel to write to this channel
