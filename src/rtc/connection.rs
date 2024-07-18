@@ -61,7 +61,7 @@ impl Connection {
         let capacity = self.queue_size;
 
         let _ = Connection::register_channel(channel.clone(), read_queue,
-                                             write_queues, capacity);
+                                             write_queues, capacity).await;
 
         Ok(channel)
     }
@@ -133,6 +133,8 @@ impl Connection {
                             return;
                         }
                     };
+
+                    dbg!("Pleased to announce detachment.");
 
                     let rc = raw.clone();
                     tokio::spawn(async move {
