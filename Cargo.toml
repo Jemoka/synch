@@ -13,3 +13,6 @@ anyhow = "1.0.86"
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22.1"
 bytes = { version = "1.6.1", features = ["std", "serde"] }
+log = "0.4.22"
+env_logger = { version = "0.11.3", features = ["auto-color"] }
+futures = "0.3.30"

@@ -5,36 +5,75 @@ pub mod rtc;
 pub use rtc::*;
 
 use anyhow::Result;
-use std::sync::Arc;
+
+use std::fs;
+// use std::io::{self, Read};
+
+use log::info;
+use env_logger::Env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // build an api and config for the connection
-    let api = rtc::get_api()?;
-    let config = rtc::get_config_from_stun_servers(&["stun:stun.l.google.com:19302"]);
-    let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+    // initialize our logger
+    let env = Env::default()
+        .filter_or("RUST_LOG", "synch=debug");
+    env_logger::init_from_env(env);
 
-    // create connection helper 
-    let mut cnx = Connection::new(peer_connection.clone(), None);
+    // parent code
+    let mut parent_agent = Agent::head()?;
+    let mut offer = parent_agent.offer().await?;
+    info!("parent offer: {}", offer.get());
+    let line = fs::read_to_string("./tmp").unwrap();
+    offer.answer(&line.trim()).await?;
+    parent_agent.accept(offer)?;
 
-    // create the channel to talk over
-    cnx.channel("test").await?;
 
-    // generate an offer for our peer
-    let offer = cnx.offer().await?;
+    // child code
+    let line = fs::read_to_string("./tmp").unwrap();
+    let (answer, _child_agent) = Agent::child(&line.trim()).await?;
+    info!("child answer: {}", answer);
+        
+    // let api = rtc::get_api()?;
+    // let config = rtc::get_config_from_stun_servers(&[]);
+    // let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
-    // <meanwhile, on a different machine>
-    let answer = cnx.answer(&offer).await?;
-    // </meanwhile, on a different machine>
+    // // create connection helper 
+    // let mut cnx = Connection::new(peer_connection.clone(), None);
 
-    // accept our peer's answer
-    cnx.accept(&answer).await?;
+    // // create the channel to talk over
+    // cnx.channel("test").await?;
 
-    // wait forever
-    let _ = tokio::signal::ctrl_c().await;
+    // // generate an offer for our peer
+    // let offer = cnx.offer().await?;
+    // info!("offer: {}", offer);
 
-    // and destroy 
-    cnx.close().await?;
+    // read a byte and block
+    // let _ = io::stdin().read(&mut [0u8]).unwrap();
+    // read the sync file
+    // info!("done reading answer");
+
+    // // <meanwhile, on a different machine>
+    // // string for the line
+    // // let answer = cnx.answer(&line.trim()).await?;
+    // // println!("answer: {}", answer);
+    // // </meanwhile, on a different machine>
+
+    // // accept our peer's answer
+    // cnx.accept(&line.trim()).await?;
+
+    // // send some stuff
+    // // <meanwhile, on a different machine>
+    // // cnx.send("test", vec![3,4,5,6]).await?;
+    // // </meanwhile, on a different machine>
+
+    // // read some stuff
+    // dbg!(cnx.recv("test").await.unwrap().1);
+
+    // // wait forever
+    // let _ = tokio::signal::ctrl_c().await;
+
+    // // and destroy 
+    // cnx.close().await?;
 
     Ok(())
 }

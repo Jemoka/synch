@@ -2,16 +2,17 @@ use bytes::Bytes;
 use std::pin::Pin;
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use std::future::Future;
 use std::collections::HashMap;
-use tokio::sync::mpsc::{Sender, Receiver, channel};
+use tokio::sync::mpsc::{Sender, Receiver};
 use base64::prelude::{BASE64_URL_SAFE, Engine as _};
 use webrtc::{data_channel::RTCDataChannel,
              data::data_channel::DataChannel,
              peer_connection::{peer_connection_state::RTCPeerConnectionState,
                                sdp::session_description::RTCSessionDescription,
                                RTCPeerConnection}};
+use log::{error, debug};
 
 use crate::MAX_MSG_SIZE_BYTES;
 
@@ -22,13 +23,16 @@ pub enum ConnectionType {
 }
 
 type QueueTuple = (String, Vec<u8>);
-type Queue = (Sender<QueueTuple>, Receiver<QueueTuple>);
 
 pub struct Connection {
     cnx: Arc<RTCPeerConnection>,
     cnx_type: Option<ConnectionType>,
 
-    read_queue: Arc<Queue>,
+    new_channel_notify: Arc<Notify>,
+
+    // the first mutex is for insertions to the map; the second mutex
+    // is for the reciever itself, blocking each data channel queue 
+    read_queues: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<QueueTuple>>>>>>,
     write_queues: Arc<Mutex<HashMap<String, Sender<QueueTuple>>>>,
     queue_size: usize
 }
@@ -37,15 +41,70 @@ impl Connection {
     pub fn new(connection: Arc<RTCPeerConnection>,
                queue_size: Option<usize>) -> Connection {
 
-        let qs = match queue_size { Some(x) => x, None => 1};
+        let qs = match queue_size { Some(x) => x, None => super::DEFAULT_QUEUE_SIZE};
 
         Connection {
             cnx: connection,
             cnx_type: None,
-            read_queue: Arc::new(channel(qs)),
+            new_channel_notify: Arc::new(Notify::new()),
+            read_queues: Arc::new(Mutex::new(HashMap::new())),
             write_queues: Arc::new(Mutex::new(HashMap::new())),
             queue_size: qs
         }
+    }
+
+    /// read from a channel, if exists and is non empty
+    ///
+    /// # Notes
+    /// blocks until something is given or queue is dead
+    /// returns [Option::None] if nothing is there.
+    /// blocks until this channel you want exists
+    pub async fn recv(&self, channel: &str) -> Option<QueueTuple> {
+        let queuetex: Arc<Mutex<Receiver<QueueTuple>>> = {
+            loop {
+                // lock the global mutex briefly to get the correct
+                // channel, checking if it exists (if it doesn't,
+                // wait for our Semiphore)
+                let queuetable = self.read_queues.lock();
+                if let Some(n) = queuetable.await.get(channel) {
+                    break n.clone();
+                }
+
+                self.new_channel_notify.notified().await;
+            }
+        };
+
+        // now. lock the second lock until we got something; this
+        // means we will lock every other member trying to read
+        // from this channel (which shouldn't be more than 1 thread
+        // anyway.)
+        let mut queue = queuetex.lock().await;
+        queue.recv().await
+    }
+
+    /// write to a channel, if exists and has capacity
+    ///
+    /// # Notes
+    /// blocks until this channel you want exists
+    pub async fn send(&self, channel: &str, data: Vec<u8>) -> Result<()> {
+        let queue: Sender<QueueTuple> = {
+            loop {
+                // lock the global mutex briefly to get the correct
+                // channel, checking if it exists (if it doesn't,
+                // wait for our Semiphore)
+                let queuetable = self.write_queues.lock();
+                if let Some(n) = queuetable.await.get(channel) {
+                    break n.clone();
+                }
+
+                self.new_channel_notify.notified().await;
+            }
+        };
+
+        // whoosh
+        queue.send((channel.into(), data)).await?;
+
+        Ok(())
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -54,16 +113,17 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn channel(&self, name: &str) -> Result<Arc<RTCDataChannel>> {
+    pub async fn channel(&self, name: &str) -> Result<()> {
         let channel = self.cnx.create_data_channel(name, None).await?;
-        let read_queue = self.read_queue.clone();
+        let read_queues = self.read_queues.clone();
         let write_queues = self.write_queues.clone();
+        let new_channel = self.new_channel_notify.clone();
         let capacity = self.queue_size;
 
-        let _ = Connection::register_channel(channel.clone(), read_queue,
+        let _ = Connection::register_channel(channel.clone(), new_channel, read_queues,
                                              write_queues, capacity).await;
 
-        Ok(channel)
+        Ok(())
     }
 
     async fn _read_worker(d: Arc<DataChannel>, queue: Sender<QueueTuple>, name: String) {
@@ -103,11 +163,12 @@ impl Connection {
     }
 
     fn register_channel(d: Arc<RTCDataChannel>,
-                        read_queue: Arc<Queue>,
+                        notify: Arc<Notify>,
+                        read_queues: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<QueueTuple>>>>>>,
                         write_queues: Arc<Mutex<HashMap<String, Sender<QueueTuple>>>>,
                         capacity:usize) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
     {
-        println!("New Data Channel: {}", d.label());
+        debug!("data channel connected: name '{}'", d.label());
         let channel = d.clone();
 
         Box::pin(async move {
@@ -123,29 +184,38 @@ impl Connection {
                 recv
             };
 
+            let sender = {
+                let mut guarded_write_hmp = read_queues.lock().await;
+                let (snd, recv) = tokio::sync::mpsc::channel(capacity);
+                guarded_write_hmp.insert(
+                    channel.label().to_owned(),
+                    Arc::new(Mutex::new(recv))
+                );
+                snd
+            };
+
             channel.clone().on_open(Box::new(move || {
                 Box::pin(async move {
                     let raw = match channel.detach().await {
                         Ok(raw) => raw,
                         Err(err) => {
-                            println!("data channel {} detach got err: {err}",
-                                     channel.label());
+                            error!("data channel detach got err: name '{}', error '{err}'",
+                                   channel.label());
                             return;
                         }
                     };
 
-                    dbg!("Pleased to announce detachment.");
-
                     let rc = raw.clone();
                     tokio::spawn(async move {
-                        Connection::_read_worker(rc,
-                                                 read_queue.0.clone(),
+                        Connection::_read_worker(rc, sender,
                                                  channel.label().to_owned()).await;
                     });
 
                     tokio::spawn(async move {
                         Connection::_write_worker(raw, reciever).await;
                     });
+
+                    notify.notify_waiters();
                 })
             }));
         })
@@ -154,8 +224,9 @@ impl Connection {
 
     async fn listen(&self, desc: RTCSessionDescription) -> Result<String> {
         // keep a pointer to the queue
-        let read_queue = self.read_queue.clone();
+        let read_queue = self.read_queues.clone();
         let write_queues = self.write_queues.clone();
+        let new_channel = self.new_channel_notify.clone();
         let capacity = self.queue_size;
 
         // create a handler for new data channels
@@ -163,8 +234,9 @@ impl Connection {
             // copy the queue pointers to share with the registration function 
             let read_queue = read_queue.clone();
             let write_queues = write_queues.clone();
+            let new_channel = new_channel.clone();
 
-            Connection::register_channel(d, read_queue, write_queues, capacity)
+            Connection::register_channel(d, new_channel, read_queue, write_queues, capacity)
         }));
 
         // wait for ICE gather; TODO this disables trickle ICE, which should
@@ -175,10 +247,10 @@ impl Connection {
 
         // TODO do something about this instead of just printing it
         self.cnx.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            println!("Peer Connection State has changed: {s}");
+            debug!("peer connection state changed to: {s}");
 
             if s == RTCPeerConnectionState::Failed {
-                println!("Peer Connection has gone to failed exiting");
+                error!("peer connection state failed!");
             }
 
             Box::pin(async {})
