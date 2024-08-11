@@ -19,7 +19,7 @@ pub trait MapVal: Clone + PartialEq + Default + Debug {}
 impl<T:?Sized + Clone + PartialEq + Default + Debug> MapVal for T {}
 
 pub struct SyncedMapElementGuard<'a, K: MapKey, V: MapVal> {
-    key: Option<K>,
+    key: Option<&'a K>,
     ctx: Option<ReadCtx<Option<MVReg<V, usize>>, usize>>,
     value: V,
     src: &'a mut SyncedMap<K, V>,
@@ -66,7 +66,7 @@ impl<K: MapKey, V: MapVal> Drop for SyncedMapElementGuard<'_, K, V> {
             let mut dropped_value = V::default();
             std::mem::swap(&mut dropped_value, &mut self.value);
 
-            let op = self.src.map.update(dropped_key.unwrap(), add_ctx, |v,a| v.write(dropped_value, a));
+            let op = self.src.map.update(dropped_key.unwrap().clone(), add_ctx, |v,a| v.write(dropped_value, a));
             self.src.map.apply(op.clone());
             self.src.tape.push(op);
         }
@@ -110,11 +110,56 @@ impl<'a, K: MapKey, V: MapVal> SyncedMap<K, V> {
         }
     }
 
-    pub fn get(&mut self, key: &K) -> Option<V> {
+    pub fn get(&self, key: &K) -> Option<V> {
         self.map.get(key)
             .val.and_then(|x| 
                           x.read().val.first()
                           .and_then(|y| Some(y.clone())))
+    }
+
+    pub fn lock<'b>(&'b mut self, key: &'b K) -> SyncedMapElementGuard<'b, K, V> {
+        let ctx = self.map.get(key);
+        SyncedMapElementGuard {
+            key: Some(key),
+            value: match ctx.val {
+                Some(ref x) => x.read()
+                    .val.first()
+                    .map_or(V::default(), |y| y.clone()),
+                None => V::default()
+            },
+            ctx: Some(ctx),
+            src: self,
+            was_mutated: false,
+            _not_send: PhantomData
+        }
+    }
+
+    /// upsert a value into the map
+    pub fn insert(&mut self, k: K, v: V) -> Option<V> {
+        let mut guard = self.lock(&k);
+        let old = guard.clone();
+        *guard = v;
+
+        Some(old)
+    }
+    /// alias of [SyncedMap::insert]
+    pub fn update(&mut self, k: K, v: V) -> Option<V> {
+        self.insert(k,v)
+    }
+
+    /// remove an element from the map, returning the old one
+    pub fn remove(&mut self, k: K) -> Option<V> {
+        let reader = self.map.get(&k);
+        let old_value = self.map.get(&k)
+            .val.and_then(|x| 
+                          x.read().val.first()
+                          .and_then(|y| Some(y.clone())));
+
+        let op = self.map.rm(k, reader.derive_rm_ctx());
+        self.map.apply(op.clone());
+        self.tape.push(op);
+
+        old_value
     }
 }
 
