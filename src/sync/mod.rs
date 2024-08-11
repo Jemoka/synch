@@ -1,5 +1,12 @@
 //! Synchronization Types (CRmDTs)
 
-mod list;
-pub use list::{SyncedList, SyncedListGuard};
+pub mod taped;
+pub mod list;
+pub mod map;
+
+pub mod prelude {
+    pub use super::list::*;
+    pub use super::map::*;
+    pub use super::taped::Taped;
+}
 

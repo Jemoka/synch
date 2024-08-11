@@ -6,8 +6,35 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::fmt::Debug;
 
+use super::taped::Taped;
+
 type PhantomUnsend = PhantomData<std::sync::MutexGuard<'static, ()>>;
 
+/// List Structure for Syncronized Operations
+///
+/// # Key Note
+/// **Lists can only be synced if they are `.clone()` of each other.**
+///
+/// # Examples
+///
+/// ```
+/// let mut amy:SyncedList<u8> = SyncedList::new();
+/// let mut bob:SyncedList<u8> = amy.clone();
+/// 
+/// // push some values
+/// amy.push(5);
+/// bob.push(8);
+/// // get some values
+/// let first = amy.lock(0).expect("no values are here!")
+/// // we can even change it
+/// *first = 8;
+/// // we can now syncronize the lists
+/// amy.replay(bob.tape());
+/// bob.replay(amy.tape());
+/// // once we call .tape() once, it will no longer be available
+/// assert_eq!(bob.tape().len(), 0)
+/// assert_eq!(amy.tape().len(), 0)
+/// ```
 #[derive(Deserialize)]
 pub struct SyncedList<T: Clone> {
     list: List<T, usize>,
@@ -15,6 +42,18 @@ pub struct SyncedList<T: Clone> {
     #[serde(skip)] 
     tape: Vec<Op<T, usize>>,
     
+}
+
+impl<T: Clone + Serialize> Serialize for SyncedList<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut pack = serializer.serialize_struct("SyncedList", 2)?;
+        pack.serialize_field("list", &self.list)?;
+        pack.serialize_field("actor", &(self.actor + 1))?;
+        pack.end()
+    }
 }
 
 impl<'a, T: Clone + Debug> Debug for SyncedList<T> {
@@ -79,20 +118,6 @@ impl<T:Clone> Drop for SyncedListGuard<'_, T> {
     }
 }
 
-
-
-impl<T: Clone + Serialize> Serialize for SyncedList<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut pack = serializer.serialize_struct("SyncedList", 2)?;
-        pack.serialize_field("list", &self.list)?;
-        pack.serialize_field("actor", &(self.actor + 1))?;
-        pack.end()
-    }
-}
-
 impl<T: Clone> SyncedList<T> {
     pub fn new() -> Self {
         SyncedList { list: List::new(), actor: 0, tape: vec![] } 
@@ -103,6 +128,16 @@ impl<T: Clone> SyncedList<T> {
         self.list.len()
     }
 
+    /// Grab the clone of an element from the list
+    pub fn index(&self, idx: usize) -> T {
+        if self.len() > idx {
+            self.list.position(idx).unwrap().clone()
+        } else {
+            panic!("index out of bounds: length is {} but index is {}",
+                   self.len(), idx);
+        }
+    }
+
     /// Get an element from the list, optionally setting it.
     ///
     /// # Examples
@@ -110,11 +145,11 @@ impl<T: Clone> SyncedList<T> {
     /// ```
     /// let mut list:SyncedList<u32> = SyncedList::new():
     /// list.push(1);
-    /// assert_eq!(*list.get(0).unwrap(), 1);
-    /// *list.get(0).unwrap() = 2;
-    /// assert_eq!(*list.get(0).unwrap(), 2);
+    /// assert_eq!(*list.lock(0).unwrap(), 1);
+    /// *list.lock(0).unwrap() = 2;
+    /// assert_eq!(*list.lock(0).unwrap(), 2);
     /// ```
-    pub fn get(&mut self, idx: usize) -> Option<SyncedListGuard<T>> {
+    pub fn lock(&mut self, idx: usize) -> Option<SyncedListGuard<T>> {
         if self.len() > idx {
             Some(SyncedListGuard {
                 value: self.list.position(idx).unwrap().clone(),
@@ -148,13 +183,23 @@ impl<T: Clone> SyncedList<T> {
         self.list.apply(op.clone());
         self.tape.push(op);
     }
+}
 
-    /// Replay the tape of the list, removing its tape.
+
+impl<T: Clone+Sync> Taped<usize> for SyncedList<T> {
+    type Operation =  Op<T, usize>;
+
+    /// Synchronize your list against a tape
+    fn replay(&mut self, tape: Vec<Op<T, usize>>) {
+        tape.into_iter().for_each(|x| self.list.apply(x));
+    }
+
+    /// Grab the tape of the list, removing its tape.
     ///
     /// # Note 
     /// If the tape is not published onto the wire, it  will be lost forever
     /// and not recoverable. 
-    pub fn replay(&mut self) -> Vec<Op<T, usize>> {
+    fn tape(&mut self) -> Vec<Op<T, usize>> {
         let mut old_tape = vec![];
         std::mem::swap(&mut self.tape, &mut old_tape);
         old_tape

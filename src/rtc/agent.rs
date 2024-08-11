@@ -15,7 +15,7 @@ use super::connection::Connection;
 /// Why is this a seperate struct? we need to keep the
 /// connection alive and eventually merge it back
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// let mut agent = Agent::head()?;

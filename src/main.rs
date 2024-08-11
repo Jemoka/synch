@@ -1,79 +1,32 @@
 pub mod sync;
-pub use sync::*;
-
-pub mod rtc;
-pub use rtc::*;
+pub use sync::prelude::*;
 
 use anyhow::Result;
 
-use std::fs;
-// use std::io::{self, Read};
-
-use log::info;
-use env_logger::Env;
+// use log::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // initialize our logger
-    let env = Env::default()
-        .filter_or("RUST_LOG", "synch=debug");
-    env_logger::init_from_env(env);
+    // let mut amy:SyncedList<u8> = SyncedList::new();
+    // let mut bob:SyncedList<u8> = amy.clone();
+    // amy.push(5);
+    // amy.push(7);
+    // *amy.get(0).unwrap() = 12;
+    // bob.push(12);
+    // bob.push(18);
 
-    // parent code
-    let mut parent_agent = Agent::head()?;
-    let mut offer = parent_agent.offer().await?;
-    info!("parent offer: {}", offer.get());
-    let line = fs::read_to_string("./tmp").unwrap();
-    offer.answer(&line.trim()).await?;
-    parent_agent.accept(offer)?;
+    // bob.replay(amy.tape());
+    // amy.replay(bob.tape());
+    // assert_eq!(bob.tape().len(), 0);
 
+    // *bob.get(0).unwrap() = 17;
+    // *amy.get(0).unwrap() = 11;
 
-    // child code
-    let line = fs::read_to_string("./tmp").unwrap();
-    let (answer, _child_agent) = Agent::child(&line.trim()).await?;
-    info!("child answer: {}", answer);
-        
-    // let api = rtc::get_api()?;
-    // let config = rtc::get_config_from_stun_servers(&[]);
-    // let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+    // bob.replay(amy.tape());
+    // amy.replay(bob.tape());
 
-    // // create connection helper 
-    // let mut cnx = Connection::new(peer_connection.clone(), None);
-
-    // // create the channel to talk over
-    // cnx.channel("test").await?;
-
-    // // generate an offer for our peer
-    // let offer = cnx.offer().await?;
-    // info!("offer: {}", offer);
-
-    // read a byte and block
-    // let _ = io::stdin().read(&mut [0u8]).unwrap();
-    // read the sync file
-    // info!("done reading answer");
-
-    // // <meanwhile, on a different machine>
-    // // string for the line
-    // // let answer = cnx.answer(&line.trim()).await?;
-    // // println!("answer: {}", answer);
-    // // </meanwhile, on a different machine>
-
-    // // accept our peer's answer
-    // cnx.accept(&line.trim()).await?;
-
-    // // send some stuff
-    // // <meanwhile, on a different machine>
-    // // cnx.send("test", vec![3,4,5,6]).await?;
-    // // </meanwhile, on a different machine>
-
-    // // read some stuff
-    // dbg!(cnx.recv("test").await.unwrap().1);
-
-    // // wait forever
-    // let _ = tokio::signal::ctrl_c().await;
-
-    // // and destroy 
-    // cnx.close().await?;
+    // dbg!(amy);
+    // dbg!(bob);
 
     Ok(())
 }
